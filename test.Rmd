@@ -1,0 +1,190 @@
+---
+title: "Untitled"
+author: "Alfan"
+date: "3/23/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+Import data train and test from dataset we get 
+
+```{r}
+train <- read_csv("data/data-train.csv")
+test <- read_csv("data/data-test.csv")
+```
+
+Check structure each data train & test i will using `glimpse` function
+
+
+
+```{r}
+glimpse(test)
+```
+
+`test` data is contain 3 variable, this `test` data will be our prediction result, in this case we will try predict next 7 days (Sunday, December 3rd 2017 to Monday, December 9th 2017).   
+
+We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days.   
+
+We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`. Sufficient describe that scotty can cover all driver order from user, and `insufficient` mean scotty cant cover all driver request from user other hand we can say order more bigger than driver available.
+
+Lets check structure of train data:   
+
+```{r}
+glimpse(train)
+```
+
+Based on data above, we cant see coverage variable inside train data. but we found train data structure contain detail order from scotty. Some variable have mismatch datatype, we will try to change data type:
+
+```{r}
+data_new <- train %>%
+  mutate(src_area = as.factor(src_area),
+        src_sub_area = as.factor(src_sub_area),
+        dest_area = as.factor(dest_area),
+        dest_sub_area = as.factor(dest_sub_area),
+        status = as.factor(status)
+        )
+```
+
+
+lets preview contain of data to understand more train data:
+
+```{r}
+head(train)
+```
+
+we found there's any NA value inside `trip_id` and `rider_id`, to make it more clear i will check NA value from all column before we take any action to data wrangling
+
+```{r}
+summary(is.na(train))
+```
+
+We found NA value only `trip_id` and `driver_id`, lets compare some row with NA value with non-NA row
+
+```{r}
+train[c(1:3)]
+```
+
+We found there's any relation why `trip_id` and `driver_id` NA, is because `status` is "nodrivers". and it will fullfil if status is "confirmed". It will be our clue to extract information of `coverage` data.    
+
+Based on our target we describe before, our prediction will be hourly based on area, we need to grouping the order data to be hourly. We need extract hour from each order and seprate it from date:
+
+```{r}
+train_hourly <- train %>%
+  mutate(src_area = as.factor(src_area),
+        date = date(start_time),
+        hour = as.factor(hour(start_time)))
+```
+
+
+```{r}
+glimpse(train_hourly)
+```
+
+we have new variable `date` it explain date order happen and `hour` it explain hours when user order driver. We will grouping data by `src_area`, `date`, `hour`, and `status`, for data aggregation. The result of this data aggegation we will labeling based on status. Hour that have status nodriver > 0, will label as `insufficient` and if status nodriver = 0, we will label it `sufficient`.
+
+
+```{r}
+coverage_hourly <- train_hourly %>% 
+  group_by(src_area, date, hour, status) %>% 
+  summarise(n = n()) %>%
+  ungroup() %>%
+  spread(status, n, fill=0) %>% 
+  mutate(coverage = as.factor(if_else(nodrivers == 0, "sufficient", "insufficient")),
+         datetime = ymd_h(paste(date, hour)))
+
+coverage_hourly
+```
+
+Until this step, we have label as target variable is `coverage` with 2 level "sufficient" and "insufficient" in train data.   
+
+To make good prediction model and good exploratory data analysis, we need c complete time interval data. lets take look summary of our interval data:
+
+```{r}
+summary(coverage_hourly$datetime)
+```
+
+based on summary our data is start from `2017-10-01 00:00:00` to `2017-12-02 23:00:00`. We will determin for as start and end of interval
+
+```{r}
+sorted_datetime <- coverage[order(coverage_hourly$datetime), c("datetime")]
+
+datetime_start <- sorted_datetime$datetime[1]
+datetime_end <- sorted_datetime$datetime[length(sorted_datetime$datetime)]
+
+datetime_start
+datetime_end
+```
+
+Make complete list from start interval til end of interval in hourly
+
+```{r}
+all_date <- seq(datetime_min, datetime_max, by = "hour")
+all_date <- data.frame(list(datetime = all_date))
+
+nrow(all_date)
+```
+
+Total we have 1512 hour interval from start to the end. we will padding time list to our train data
+
+```{r}
+sxk3 <- coverage_hourly %>% 
+  filter(src_area == "sxk3") %>% 
+  arrange(desc(datetime)) %>% 
+  merge(all_date, all = T) %>% 
+  mutate(src_area = as.factor("sxk3"))
+
+sxk8 <- coverage_hourly %>% 
+  filter(src_area == "sxk8") %>% 
+  arrange(desc(datetime)) %>% 
+  merge(all_date, all = T) %>% 
+  mutate(src_area = as.factor("sxk8"))
+
+sxk9 <- coverage_hourly %>% 
+  filter(src_area == "sxk9") %>% 
+  arrange(desc(datetime)) %>% 
+  merge(all_date, all = T) %>% 
+  mutate(src_area = as.factor("sxk9"))
+
+
+coverage_all_date <- do.call("rbind", list(sxk3, sxk8, sxk9))
+
+head(coverage_all_date)
+```
+
+Result of padding complete with hourly interval, we have NA value inside our train data. We will fill this NA with 0 and label coverage as `sufficient` level.
+
+
+```{r}
+coverage_all_date <- coverage_all_date %>% 
+  mutate(
+        date = date(datetime),
+        hour = as.factor(hour(datetime)),
+        confirmed = replace_na(confirmed, 0),
+        nodrivers = replace_na(nodrivers,0),
+        coverage = replace_na(coverage, "sufficient")
+        )
+```
+
+
+```{r}
+head(coverage_all_date)
+```
+
+check proportion
+
+```{r}
+prop.table(table(coverage_hourly$coverage))
+```
+
+```{r}
+prop.table(table(coverage_all_date$coverage))
+```
+
