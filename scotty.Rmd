@@ -10,8 +10,17 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ```{r}
+library(GGally)
 library(tidyverse)
 library(lubridate)
+library(scales)
+library(rsample)
+library(caret)
+library(partykit)
+# Smote for unbalanced data
+library(DMwR)
+# KNN modelling
+library(class)
 ```
 
 Import data train and test from dataset we get 
@@ -29,11 +38,68 @@ Check structure each data train & test i will using `glimpse` function
 glimpse(test)
 ```
 
+  
 `test` data is contain 3 variable, this `test` data will be our prediction result, in this case we will try predict next 7 days (Sunday, December 3rd 2017 to Monday, December 9th 2017).   
 
 We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days.   
 
 We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`. Sufficient describe that scotty can cover all driver order from user, and `insufficient` mean scotty cant cover all driver request from user other hand we can say order more bigger than driver available.
+
+```{r}
+test <- test %>% 
+  mutate(src_area = as.factor(src_area))
+```
+
+```{r}
+summary(test)
+```
+
+```{r}
+test <- test %>%
+  mutate(src_area = as.factor(src_area),
+        date = date(datetime),
+        day = as.factor(wday(datetime, label = TRUE, abbr = FALSE)),
+        hour = as.factor(hour(datetime)))
+```
+
+
+
+# Intro
+
+## Background
+
+Scotty is a ride-sharing business that operating in several big cities in Turkey. The company provides motorcycles ride-sharing service for Turkey’s citizen, and really value the efficiency in traveling through the traffic–the apps even give some reference to Star Trek “beam me up” in their order buttons.
+
+Scotty provided us with real-time transaction dataset. With this dataset, we are going to help them in solving some forecasting and classification problems in order to improve their business processes.
+
+## Problem
+
+Scotty turns out being a very popular service in Turkey! The demands for Scotty began to overload, at some region and some times, and there was not enough driver at those times and places. Fortunately, we are know that we can use classification model to predict which region and times are risky enough to have this “no drivers” problem.
+
+Create a classification model report that would be evaluated on next 7 days (Sunday, December 3rd 2017 to Saturday, December 9th 2017). Make prediction that should cover the predicted coverage status for each hour and each area: "sufficient" or "insufficient".
+
+## Import Library
+
+To solve this case we need import some package to help process and predict:
+
+```{r message=FALSE}
+library(GGally)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(rsample)
+library(caret)
+library(partykit)
+```
+
+# Read Data
+
+Scotty provide transaction detail transaction from October 1st, 2017 to December 2nd, 2017 as train dataset. Based on this train data we can start process to make model and predict. 
+
+```{r}
+train <- read_csv("data/data-train.csv")
+test <- read_csv("data/data-test.csv")
+```
 
 Lets check structure of train data:   
 
@@ -41,10 +107,30 @@ Lets check structure of train data:
 glimpse(train)
 ```
 
+The dataset includes information about:   
+
+  * id: Transaction id   
+  * trip_id: Trip id   
+  * driver_id: Driver id   
+  * rider_id: Rider id   
+  * start_time: Rider id   
+  * src_lat: Request source latitude   
+  * src_lon: Request source longitude   
+  * src_area: Request source area   
+  * src_sub_area: Request source sub-area   
+  * dest_lat: Requested destination latitude   
+  * dest_lon: Requested destination longitude   
+  * dest_area: Requested destination area    
+  * dest_sub_area: Requested destination sub-area    
+  * distance: Trip distance (in KM)    
+  * status: Trip status (all status considered as a demand)    
+  * confirmed_time_sec: Time different from request to confirmed (in seconds)   
+  
+
 Based on data above, we cant see coverage variable inside train data. but we found train data structure contain detail order from scotty. Some variable have mismatch datatype, we will try to change data type:
 
 ```{r}
-data_new <- train %>%
+train <- train %>%
   mutate(src_area = as.factor(src_area),
         src_sub_area = as.factor(src_sub_area),
         dest_area = as.factor(dest_area),
@@ -53,6 +139,7 @@ data_new <- train %>%
         )
 ```
 
+# Data Wrangling
 
 lets preview contain of data to understand more train data:
 
@@ -69,17 +156,20 @@ summary(is.na(train))
 We found NA value only `trip_id` and `driver_id`, lets compare some row with NA value with non-NA row
 
 ```{r}
-train[c(1:3)]
+train[c(1:3),]
 ```
 
 We found there's any relation why `trip_id` and `driver_id` NA, is because `status` is "nodrivers". and it will fullfil if status is "confirmed". It will be our clue to extract information of `coverage` data.    
 
-Based on our target we describe before, our prediction will be hourly based on area, we need to grouping the order data to be hourly. We need extract hour from each order and seprate it from date:
+Based on our target we have before, we will predict 7 days for each hour and each area. Why we dont specified time level only days, we cant explain detail which time get more dirver order. but if we make level into minute the data will too specific and result the data we have will make us confuse. So hourly interval is best time level to predict.
+
+We can see from structure we dont have `hour` variable. We have `start_time` as users order time, we can extract specific level from Date, Days, Hour:
 
 ```{r}
 train_hourly <- train %>%
   mutate(src_area = as.factor(src_area),
         date = date(start_time),
+        day = as.factor(wday(start_time, label = TRUE, abbr = FALSE)),
         hour = as.factor(hour(start_time)))
 ```
 
@@ -88,33 +178,43 @@ train_hourly <- train %>%
 glimpse(train_hourly)
 ```
 
-we have new variable `date` it explain date order happen and `hour` it explain hours when user order driver. We will grouping data by `src_area`, `date`, `hour`, and `status`, for data aggregation. The result of this data aggegation we will labeling based on status. Hour that have status nodriver > 0, will label as `insufficient` and if status nodriver = 0, we will label it `sufficient`.
+we have new variable `date` it explain date order happen,`day` it explain day, and `hour` it explain hours when user order driver.
+
+```{r}
+summary(train_hourly)
+```
+
+To make dataset convert perfectly to hourly interval, we need grouping transaction data and summarise data to hourly.   
+
+Example we have data with time 06:01:00,06:30:00,07:00:00 so it will group 06:00:00 have 2 transaction and 07:00:00 have 1 transaction.   
+
+We will grouping data by `src_area`, `date`, `hour`, and `status`, for data aggregation. Beside that after we grouping we summarise `total_transaction` it explain how many transaction within interval, and at status we have 2 class we already know before confirmed and nodrivers, we will count frequency:
 
 
 ```{r}
 coverage_hourly <- train_hourly %>% 
-  group_by(src_area, date, hour, status) %>% 
+  group_by(src_area, date, day, hour, status) %>% 
   summarise(n = n()) %>%
   ungroup() %>%
   spread(status, n, fill=0) %>% 
-  mutate(coverage = as.factor(if_else(nodrivers == 0, "sufficient", "insufficient")),
-         datetime = ymd_h(paste(date, hour)))
+  mutate(
+    total_transaction = confirmed + nodrivers,
+    datetime = ymd_h(paste(date, hour)))
 
-coverage_hourly
+#preview the data
+head(coverage_hourly)
 ```
 
-Until this step, we have label as target variable is `coverage` with 2 level "sufficient" and "insufficient" in train data.   
-
-To make good prediction model and good exploratory data analysis, we need c complete time interval data. lets take look summary of our interval data:
+To make prediction model and good exploratory data analysis, we need complete time interval data. lets take look summary of our interval data:
 
 ```{r}
 summary(coverage_hourly$datetime)
 ```
 
-based on summary our data is start from `2017-10-01 00:00:00` to `2017-12-02 23:00:00`. We will determin for as start and end of interval
+based on summary our data is start from `2017-10-01 00:00:00` to `2017-12-02 23:00:00`. We will determine for as start and end of interval
 
 ```{r}
-sorted_datetime <- coverage[order(coverage_hourly$datetime), c("datetime")]
+sorted_datetime <- coverage_hourly[order(coverage_hourly$datetime),]
 
 datetime_start <- sorted_datetime$datetime[1]
 datetime_end <- sorted_datetime$datetime[length(sorted_datetime$datetime)]
@@ -123,16 +223,17 @@ datetime_start
 datetime_end
 ```
 
-Make complete list from start interval til end of interval in hourly
+Make complete list from start interval until end of interval in hourly
 
 ```{r}
-all_date <- seq(datetime_min, datetime_max, by = "hour")
+all_date <- seq(datetime_start, datetime_end, by = "hour")
 all_date <- data.frame(list(datetime = all_date))
 
+# total hours from start to end date
 nrow(all_date)
 ```
 
-Total we have 1512 hour interval from start to the end. we will padding time list to our train data
+Total we have 1512 hour interval from start to the end. we will padding implement new time interval to our train data
 
 ```{r}
 sxk3 <- coverage_hourly %>% 
@@ -153,13 +254,12 @@ sxk9 <- coverage_hourly %>%
   merge(all_date, all = T) %>% 
   mutate(src_area = as.factor("sxk9"))
 
-
 coverage_all_date <- do.call("rbind", list(sxk3, sxk8, sxk9))
 
 head(coverage_all_date)
 ```
 
-Result of padding complete with hourly interval, we have NA value inside our train data. We will fill this NA with 0 and label coverage as `sufficient` level.
+Implement new interval data cause NA value for some row, it because from our train data dont have any transaction during some interval taime.  We will fill this NA with 0 value:
 
 
 ```{r}
@@ -167,9 +267,10 @@ coverage_all_date <- coverage_all_date %>%
   mutate(
         date = date(datetime),
         hour = as.factor(hour(datetime)),
+        day = as.factor(wday(datetime, label = TRUE, abbr = FALSE)),
         confirmed = replace_na(confirmed, 0),
         nodrivers = replace_na(nodrivers,0),
-        coverage = replace_na(coverage, "sufficient")
+        total_transaction = replace_na(total_transaction ,0),
         )
 ```
 
@@ -178,13 +279,352 @@ coverage_all_date <- coverage_all_date %>%
 head(coverage_all_date)
 ```
 
-check proportion
+# Exploratory Data Analysis
+
+Our case is to make prediction that should cover the predicted coverage status for each hour and each area: "sufficient" or "insufficient". Next we will make our target variable `coverage` based on variable we have on dataset. `status` is variable we use labeling `coverage`, status with nodriver > 0, will label as `insufficient` and if status nodriver = 0, we will label it `sufficient`.
 
 ```{r}
-prop.table(table(coverage_hourly$coverage))
+coverage_all_date <- coverage_all_date %>%
+  mutate(coverage = as.factor(if_else(nodrivers == 0, "sufficient", "insufficient")))
+
+head(coverage_all_date)
+```
+
+Until this step, we have label as target variable is `coverage` with 2 level "sufficient" and "insufficient" in train data.  
+
+Check proportion for our target variable `coverage`, on process we have prepare some set of data frame. `coverage_hourly` data before we padding it, and after padding data we have `coverage_all_date`. let check proportion before padding and after padding.
+
+```{r}
+coverage_hourly <- coverage_hourly %>%
+  mutate(coverage = as.factor(if_else(nodrivers == 0, "sufficient", "insufficient")))
+
+proportion <- data.frame(prop.table(table(coverage_hourly$coverage)))
+
+proportion %>% 
+  ggplot(aes(x = Var1, y = Freq)) + 
+  geom_bar(aes(fill = Freq), stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(label = percent(Freq)),
+            fontface = "bold",
+            color = "white",
+            position = position_stack(vjust = 0.5)) +
+  theme(legend.position = "none") +
+  labs(
+    title = "Coverage proportion before padding",
+    x = "",
+    y = ""
+  )
+```
+
+Before padding proportion of `coverage` is 64% of data label as insufficient and 36% of data label as sufficient. Next we show train data after implement padding or new time interval
+
+```{r}
+proportion <- data.frame(prop.table(table(coverage_all_date$coverage)))
+
+proportion %>% 
+  ggplot(aes(x = Var1, y = Freq)) + 
+  geom_bar(aes(fill = Freq), stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(label = percent(Freq)),
+            fontface = "bold",
+            color = "white",
+            position = position_stack(vjust = 0.5)) +
+  theme(legend.position = "none") +
+  labs(
+    title = "Coverage proportion after padding",
+    x = "",
+    y = ""
+  )
+```
+
+Proportion after we padding is more better before we padding, proportion is 54.1& labeled as insufficient and 45.9% labeled as sufficient.   
+
+This dataset have `src_are` explain different area, lets check how is frequency from our train dataset:   
+
+```{r}
+proportion <- data.frame(summary(coverage_all_date$src_area)) %>% 
+  rownames_to_column(., "VALUE") %>%
+  mutate("Source Area" = .[,1],
+         "Freq" = .[,2]) %>% 
+  select(3,4)
+
+proportion
+```
+
+it show for each area have same frequency data 1512 transaction, its because we has padding the train dataset before. Lets check proportion of `coverage` for each area:
+
+
+```{r}
+proprotion <- coverage_all_date %>% 
+  group_by(src_area) %>% 
+  summarise(insufficient = sum(coverage == "insufficient"),
+            sufficient = sum(coverage == "sufficient"),
+            total = n(),
+            "proportion insufficient" = insufficient/n(),
+            "proportion sufficient" = sufficient/n())
+
+proprotion
+```
+
+More better we visualize it
+
+```{r}
+proprotion %>% 
+  select("src_area","proportion insufficient", "proportion sufficient") %>% 
+  rename("insufficient" = "proportion insufficient",
+         "sufficient" = "proportion sufficient") %>% 
+  gather(key = "prop",
+         value = "value",
+         -src_area) %>% 
+  ggplot(aes(x = prop, y = value)) +
+  geom_bar(aes(fill = prop), stat = "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  geom_text(aes(label = percent(value)),
+            fontface = "bold",
+            color = "white",
+            position = position_stack(vjust = 0.5)) +
+  facet_wrap( ~ src_area) +
+  labs(
+    title = "Coverage proportion group by Area",
+    x = "",
+    y = ""
+  ) +
+  theme(legend.position = "none") 
+
+```
+
+From 3 area we have, only sxk8 that have more than 50% sufficient label, it indicate other area sxk3 and sxk9 need more driver in those area. lets check other visualize to get better insight.   
+
+We will try to use heatmap type visualization
+
+```{r}
+coverage_all_date %>% 
+  mutate(day = as.factor(wday(datetime, label = TRUE, abbr = TRUE))) %>% 
+  group_by(day, hour, src_area) %>% 
+  summarise(sufficient = sum(coverage == "sufficient")) %>% 
+  ggplot(aes(x = day, y = hour, fill = sufficient)) +
+  geom_tile() +
+  facet_wrap(~src_area) +
+   theme(legend.position = "bottom") 
+
+```
+
+To make more clear and get detail insight, i would make other visualization using bar plot:
+
+```{r}
+coverage_all_date %>% 
+  select(-c("datetime", "date", "day")) %>% 
+  group_by(hour, src_area) %>% 
+  summarise(insufficient = sum(coverage == "insufficient"),
+            sufficient = sum(coverage == "sufficient")) %>% 
+  gather("type","value",-src_area, -hour) %>% 
+  ggplot(aes(x = hour, y = value, fill = type)) +
+  geom_col(position = "dodge") +
+  facet_grid(src_area ~ .) +
+  theme(legend.position = "bottom")  +
+  labs(title = "Coverage hourly group by Area")
+
+```
+
+some insight we can get is:   
+  1. sxk9 area is the most insufficient driver area, from heatmap all days its show dark area it mean all days and every hour users didnt get driver when they order.
+  2. sxk8 area is the most sufficient driver area, every hour and every hour confirmed driver than other area. 
+  3. However area sxk8 still in 08:00 it nearly insufficient label more than sufficient label, especially in working days from monday to friday, it show more dark blue on heatmap.
+  4.sxk3 area get more driver start from morning 06:00 which people start to activity until late night around 00:00 and this case happen always every day looks from heatmap.
+  5. There is corellation between days, hour, area to coverage.
+
+
+```{r}
+glimpse(train)
+```
+
+
+```{r}
+ggcorr(train, label = T)
 ```
 
 ```{r}
-prop.table(table(coverage_all_date$coverage))
+summary(coverage_all_date)
+```
+
+# Data Preprocessing 
+
+Meanwhile after several processing data we has make new data frame `coverage_hourly` with structure:
+
+```{r}
+glimpse(coverage_hourly)
+```
+
+some variable in our train dataset still didint use in this new data frame, we can put into our new dataframe 
+
+```{r}
+int_var <- train_hourly %>% 
+  group_by(src_area, date, day, hour) %>% 
+  summarise(mean_distance = mean(distance),
+            sum_distance = sum(distance),
+            median_distance = median(distance),
+            mean_confirmed_time_sec = mean(confirmed_time_sec),
+            sum_confirmed_time_sec = sum(confirmed_time_sec),
+            median_confirmed_time_sec = median(confirmed_time_sec)) %>% 
+  ungroup() %>% 
+  select(-c(src_area, date, day, hour))
+glimpse(int_var)
+```
+from variable `distance` and `confirmed_time_sec` we do mean, median, sum for make new variable. we combine it with `coverage_hourly`
+
+```{r}
+coverage_hourly <- cbind(coverage_hourly, int_var)
+```
+
+
+# Cross Validation
+
+Cross-validation (CV) is a statistical method that can be used to evaluate the performance of models or algorithms where the data is separated into two subsets namely learning process data and validation / evaluation data. We already have train and test dataset, in this case i will use 3 dataset, is train, validation and test data.
+
+We check proportion our existing train and test:
+
+```{r}
+nrow(train)
+nrow(test)
+```
+
+total we have 229.532 data observation and our test data 504 target to predict. The proportion is already well, because we have more 99% data to train our model later.  
+
+This train dataset i will seperate into 2 dataset: data train and data validation. I will take 15% from data train to put into data validation. 
+
+```{r}
+intial_train <- initial_split(coverage_all_date, prop = 0.85, strata = "coverage")
+train_training <- training(intial_train)
+train_validation <- testing(intial_train)
+```
+
+
+```{r}
+prop.table(table(train_training$coverage))
+```
+
+```{r}
+train_training_upsample <- upSample(x = within(train_training, rm("coverage")), y = train_training$coverage, yname = "coverage")
+
+prop.table(table(train_training_upsample$coverage))
+```
+
+
+# Modeling 
+
+## Model Fitting 
+
+Before we try to choose model, we have `test` dataset that give us rules that our model result should fit with our `test` structure. Lets take look data test we have
+
+```{r}
+glimpse(test)
+```
+
+```{r}
+summary(test)
+```
+
+
+Data test is contain 3 variable, this data test will be our prediction result, in this case we will try predict next 7 days (Sunday, December 3rd 2017 to Monday, December 9th 2017).   
+
+We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days. We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`.    
+
+Our variable to predict using data test strict only based on this 3 variable, for `datetime` we can extract it into hour interval. 
+
+```{r}
+test <- test %>%
+  mutate(src_area = as.factor(src_area),
+        date = date(datetime),
+        day = as.factor(wday(datetime, label = TRUE, abbr = FALSE)),
+        hour = as.factor(hour(datetime)))
+```
+
+```{r}
+glimpse(test)
+```
+
+Based on data test exploration we do above, the only predictor variable we can use only `src_area`, `datetime`,`date`,`day`,`hour` and for target still `coverage` with 2 class sufficient and insufficient. we can removing unsued variable from our data train and data validation we make before 
+
+```{r}
+train_training <- train_training %>% 
+  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+train_validation <- train_validation %>% 
+  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+train_training_upsample <- train_training_upsample %>% 
+  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+```
+
+
+For models to predict, we only have choice choose model that accept only factor, or categorical predictor variable and categorical target variable, the model we can 
+
+## Logistict Regression 
+
+```{r}
+train_training
+```
+
+
+```{r}
+logistict_model <- glm(coverage ~ ., train_training, family = "binomial")
+```
+
+```{r}
+summary(logistict_model)
+```
+
+```{r}
+logistict_prediction <- predict(logistict_model, train_validation, type = "response")
+```
+
+```{r}
+logistict_prediction <- as.factor(if_else(logistict_prediction > 0.5, "sufficient", "insufficient"))
+```
+
+```{r}
+confusionMatrix(logistict_prediction, train_validation$coverage, positive = "sufficient")
+```
+
+
+```{r}
+dtree_model <- ctree(formula = coverage ~ src_area + day + hour, data = train_training)
+```
+
+```{r}
+plot(dtree_model)
+```
+
+```{r}
+dtree_prediction <- predict(dtree_model, train_validation)
+```
+
+```{r}
+confusionMatrix(dtree_prediction, train_validation$coverage)
+```
+
+```{r}
+predict_result <- predict(dtree_model, test)
+```
+
+```{r}
+test$coverage <- predict_result
+test <- test %>% 
+  mutate(coverage = as.factor(if_else(coverage == 1,"sufficient","insufficient"))) %>% 
+  select(-c(date,day,hour))
+```
+
+```{r}
+write.csv(test, "data/data-test-result.csv")
+```
+
+```{r}
+mean_distance <- train_hourly %>% 
+  group_by(src_area, date, day, hour) %>% 
+  summarise(mean_distance = mean(distance)) %>% 
+  ungroup() %>% 
+  select(mean_distance)
+
+coverage_hourly <- cbind(coverage_hourly, mean_distance)
+
+coverage_hourly
 ```
 
