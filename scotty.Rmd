@@ -30,6 +30,21 @@ train <- read_csv("data/data-train.csv")
 test <- read_csv("data/data-test.csv")
 ```
 
+```{r}
+source("script/matrix_result.R")
+source("script/metrics.R")
+
+confussionMatrixPlot <- function(table) {
+  table %>% ggplot(aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), fontface = "bold", color = "white") +
+  theme_minimal() +
+  theme(legend.position = "none")
+}
+ 
+```
+
+
 Check structure each data train & test i will using `glimpse` function
 
 
@@ -555,14 +570,52 @@ train_training_upsample <- train_training_upsample %>%
 ```
 
 
-For models to predict, we only have choice choose model that accept only factor, or categorical predictor variable and categorical target variable, the model we can 
+For models to predict, we only have choice choose model that accept only factor, or categorical predictor variable and categorical target variable. I decided to compare 4 type model:
+  
+  1. Logistict Regression
+  2. Naive Bayes
+  3. Decision Tree
+  4. Random Forest
+
+## Evaluation
+
+In this case, to compare each model we will use confusion matrix. Confusion matrix is a table that shows four different category: True Positive, True Negative, False Positive, and False Negative.
+
+```{r fig.align="center", echo=FALSE}
+knitr::include_graphics("./images/confussion_matrix.png")
+```
+
+The performance will be the Accuracy, Sensitivity/Recall, Specificity, and Precision. Accuracy measures how many of our data is correctly predicted. Sensitivity measures out of all positive outcome, how many are correctly predicted. Specificty measure how many negative outcome is correctly predicted. Precision measures how many of our positive prediction is correct.
+
+```{r fig.align="center", echo=FALSE}
+knitr::include_graphics("./images/matrix_table.png")
+```
 
 ## Logistict Regression 
 
+Logistic regression is a statistical model that in its basic form uses a logistic function to model a binary dependent variable, although many more complex extensions exist. In regression analysis, logistic regression (or logit regression) is estimating the parameters of a logistic model (a form of binary regression).   
+
+Logistic regression is a technique that is well suited for examining the relationship between a categorical response variable and one or more categorical or continuous predictor variables. we can check our structure of our dataset, we can see both of predictor or target is factor.
+
 ```{r}
-train_training
+glimpse(train_training_upsample)
 ```
 
+### Assumption Checking 
+
+Logistict regression follow 3 assumtion before we use it:   
+
+* Multicollinearity: between predictors do not correlate with each other, we can see our predictor contain categorical and each dont have corelate each other.   
+
+* Independence of Observations: between observations are mutually independent & do not originate from repeated measurements. We can check ourtraining data actually extraction for hourly and it show historical and it didnt repeat, if repet for time and day it could have different area    
+
+* Linearity of Predictor & Log of Odds: the way of interpretation refers to this assumption. for numerical variables, an increase of 1 value will increase the log of odds.   
+
+From total 3 assumption, 2 assumption we confidence our train dataset meet the requirment. So we can continue using our train dataset
+
+### Model Train
+
+We will train logistic regression model. at first we will use all our variabel inside train data frame, and use `coverage` as target.
 
 ```{r}
 logistict_model <- glm(coverage ~ ., train_training, family = "binomial")
@@ -572,21 +625,88 @@ logistict_model <- glm(coverage ~ ., train_training, family = "binomial")
 summary(logistict_model)
 ```
 
+We have only 3 predictor variable, but why it show lot of variable? because `glm` function will automatically do dummy coding means is reoding the original categorical variable into a set of binary variables that have values of one and zero.   
+
+From summary we can analyze the fitting and interpret that the model is telling us. We can se average all of our predictor variable are statistivally significant. No matter some dummy coding variable have big p-value or more <0.05 we cant judge one by one we must sum it as one variable.
+
+### Model Evaluation
+
+We have make our logistic regression using all predict variable on dataset. Next this model use to predict with valudation dataset.
+
 ```{r}
 logistict_prediction <- predict(logistict_model, train_validation, type = "response")
+
+head(logistict_prediction)
 ```
+
+Logistic regression return value within range of [0,1] and isnt binary class. We will convert probabilty into class using threshold value (by default we will put 0.5 as threshold value).    
+
 
 ```{r}
 logistict_prediction <- as.factor(if_else(logistict_prediction > 0.5, "sufficient", "insufficient"))
+
+head(logistict_prediction)
+```
+
+As result we have categorical or class prediction, we use confusion matrix to evaluate the model
+
+```{r}
+matrix <- confusionMatrix(logistict_prediction, train_validation$coverage, positive = "sufficient")
+table <- as.table(matrix)
+table <- as.data.frame(table)
+confussionMatrixPlot(table)
 ```
 
 ```{r}
-confusionMatrix(logistict_prediction, train_validation$coverage, positive = "sufficient")
+logistict_matrix <- matrix_result(matrix, "Logistict Reg.")
+logistict_matrix
 ```
 
+The result show our prediction on validation dataset using logistic regression model is 78.38% for accuracy, it mean that our result data prediction 78,38% is correctly classified. Precision/positive predicted value around 79.78%, mean our positive prediction is correctly classified. Value of sensitivity is 70.83% and specificity 84.78%, this indicate positive and negative predict correctly classified range around 70-84%.
+
+## Naive Bayes
+
+Naive Bayes algorithm, in particular is a logic based technique which is simple yet so powerful that it is often known to outperform complex algorithms for very large datasets.Historically, this technique became popular with applications in email filtering, spam detection, and document categorization. There are certain characteristics of Naive Bayes that should be considered:
+
+  1. Assumes that all features of the dataset are equally important and independent. This allows Naive Bayes to perform faster computation (the algorithms is quite simple).   
+  2. Prone to bias due to data scarcity. In some cases, our data may have a distribution where scarce observations lead to probabilities approximating close to 0 or 1, which introduces a heavy bias into our model that could lead to poor performance on unseen data.   
+  3. More appropriate for data with categoric predictors. This is because Naive Bayes is sensitive to data scarcity. Meanwhile, a continuous variable might contain really scarce or even only one observation for certain value.   
+  4. Apply Laplace estimator/smoothing for data scarcity problem. Laplace estimator proposes the adding of a small number (usually 1) to each of the counts in the frequency table. This subsequently ensures that each class-feature combination has a non-zero probability of occurring.   
+
+Although it is often outperformed by other techniques, and despite the naive design and oversimplified assumptions, this classifier can perform well in many complex real-world problems. And since it is a resource efficient algorithm that is fast and scales well, we will implement it to our case.
+
+### Model Train
+
+We need build our model, and in this case we also apply Laplace Estimator. At first naive bayes model, we will use all predictor variable we have:
 
 ```{r}
-dtree_model <- ctree(formula = coverage ~ src_area + day + hour, data = train_training)
+naive_model <- naiveBayes(coverage ~ ., data = train_training_upsample, laplace = 1)
+```
+
+### Model Evaluation
+
+We have make our logistic regression using all predict variable on dataset. Next this model use to predict with valudation dataset.
+
+```{r}
+naive_prediction <- predict(naive_model, train_validation)
+```
+
+```{r}
+matrix <- confusionMatrix(naive_prediction, train_validation$coverage)
+table <- as.table(matrix)
+table <- as.data.frame(table)
+confussionMatrixPlot(table)
+```
+
+```{r}
+naive_matrix <- matrix_result(matrix, "Naive Bayes")
+naive_matrix
+```
+
+## Decision Tree
+
+```{r}
+dtree_model <- ctree(formula = coverage ~ src_area + day + hour, data = train_training_upsample)
 ```
 
 ```{r}
@@ -598,12 +718,59 @@ dtree_prediction <- predict(dtree_model, train_validation)
 ```
 
 ```{r}
-confusionMatrix(dtree_prediction, train_validation$coverage)
+matrix <- confusionMatrix(dtree_prediction, train_validation$coverage)
+table <- as.table(matrix)
+table <- as.data.frame(table)
+confussionMatrixPlot(table)
+```
+
+```{r}
+dtree_matrix <- matrix_result(matrix, "Decision Tree")
+dtree_matrix
 ```
 
 ```{r}
 predict_result <- predict(dtree_model, test)
 ```
+
+## Random Forest 
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+```
+
+```{r}
+randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 100)
+```
+
+```{r}
+randomforest_prediction <- predict(randomforest_model, train_validation)
+```
+
+```{r}
+matrix <- confusionMatrix(randomforest_prediction, train_validation$coverage)
+table <- as.table(matrix)
+table <- as.data.frame(table)
+confussionMatrixPlot(table)
+```
+
+```{r}
+randomforest_matrix <- matrix_result(matrix, "Random Forest")
+randomforest_matrix
+```
+
+```{r}
+tbl = matrix(data=c(51, 49, 24, 26), nrow=2, ncol=2, byrow=T)
+dimnames(tbl) = list(City=c('B', 'T'), Gender=c('M', 'F'))
+
+chi2 = chisq.test(tbl, correct=F)
+c(chi2$statistic, chi2$p.value)
+
+sqrt(chi2$statistic / sum(tbl))
+```
+
+
+
 
 ```{r}
 test$coverage <- predict_result
