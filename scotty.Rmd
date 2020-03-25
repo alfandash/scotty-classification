@@ -9,76 +9,6 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-library(GGally)
-library(tidyverse)
-library(lubridate)
-library(scales)
-library(rsample)
-library(caret)
-library(partykit)
-# Smote for unbalanced data
-library(DMwR)
-# KNN modelling
-library(class)
-```
-
-Import data train and test from dataset we get 
-
-```{r}
-train <- read_csv("data/data-train.csv")
-test <- read_csv("data/data-test.csv")
-```
-
-```{r}
-source("script/matrix_result.R")
-source("script/metrics.R")
-
-confussionMatrixPlot <- function(table) {
-  table %>% ggplot(aes(x = Prediction, y = Reference, fill = Freq)) +
-  geom_tile() +
-  geom_text(aes(label = Freq), fontface = "bold", color = "white") +
-  theme_minimal() +
-  theme(legend.position = "none")
-}
- 
-```
-
-
-Check structure each data train & test i will using `glimpse` function
-
-
-
-```{r}
-glimpse(test)
-```
-
-  
-`test` data is contain 3 variable, this `test` data will be our prediction result, in this case we will try predict next 7 days (Sunday, December 3rd 2017 to Monday, December 9th 2017).   
-
-We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days.   
-
-We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`. Sufficient describe that scotty can cover all driver order from user, and `insufficient` mean scotty cant cover all driver request from user other hand we can say order more bigger than driver available.
-
-```{r}
-test <- test %>% 
-  mutate(src_area = as.factor(src_area))
-```
-
-```{r}
-summary(test)
-```
-
-```{r}
-test <- test %>%
-  mutate(src_area = as.factor(src_area),
-        date = date(datetime),
-        day = as.factor(wday(datetime, label = TRUE, abbr = FALSE)),
-        hour = as.factor(hour(datetime)))
-```
-
-
-
 # Intro
 
 ## Background
@@ -93,6 +23,8 @@ Scotty turns out being a very popular service in Turkey! The demands for Scotty 
 
 Create a classification model report that would be evaluated on next 7 days (Sunday, December 3rd 2017 to Saturday, December 9th 2017). Make prediction that should cover the predicted coverage status for each hour and each area: "sufficient" or "insufficient".
 
+Our target is to get information which hour and area that have "insufficient" label, it mean we want to know which hour and area that really need more driver.
+
 ## Import Library
 
 To solve this case we need import some package to help process and predict:
@@ -105,6 +37,30 @@ library(scales)
 library(rsample)
 library(caret)
 library(partykit)
+# Smote for unbalanced data
+library(DMwR)
+# KNN modelling
+library(class)
+#ROCR
+library(ROCR)
+# Naive Bayes 
+library(e1071)
+# Visualize
+library(plotly)
+```
+
+```{r}
+source("script/matrix_result.R")
+source("script/metrics.R")
+
+confussionMatrixPlot <- function(table) {
+  table %>% ggplot(aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), fontface = "bold", color = "white") +
+  theme_minimal() +
+  theme(legend.position = "none")
+}
+ 
 ```
 
 # Read Data
@@ -508,7 +464,8 @@ total we have 229.532 data observation and our test data 504 target to predict. 
 This train dataset i will seperate into 2 dataset: data train and data validation. I will take 15% from data train to put into data validation. 
 
 ```{r}
-intial_train <- initial_split(coverage_all_date, prop = 0.85, strata = "coverage")
+set.seed(100)
+intial_train <- initial_split(coverage_all_date, prop = 0.80, strata = "coverage")
 train_training <- training(intial_train)
 train_validation <- testing(intial_train)
 ```
@@ -542,7 +499,7 @@ summary(test)
 
 Data test is contain 3 variable, this data test will be our prediction result, in this case we will try predict next 7 days (Sunday, December 3rd 2017 to Monday, December 9th 2017).   
 
-We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days. We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`.    
+We have `src_area` it source area that user order driver. We can see `datetime` interval separate each 1 hour, it mean our prediction value will predict each hour or hourly for 7 days. We have column `coverage` variable, it will be our target variable contain `sufficient` and `insufficient`, based on our bussiness case we would to know `insufficient` as priority and it will positive. 
 
 Our variable to predict using data test strict only based on this 3 variable, for `datetime` we can extract it into hour interval. 
 
@@ -618,7 +575,7 @@ From total 3 assumption, 2 assumption we confidence our train dataset meet the r
 We will train logistic regression model. at first we will use all our variabel inside train data frame, and use `coverage` as target.
 
 ```{r}
-logistict_model <- glm(coverage ~ ., train_training, family = "binomial")
+logistict_model <- glm(coverage ~ ., train_training_upsample, family = "binomial")
 ```
 
 ```{r}
@@ -643,7 +600,7 @@ Logistic regression return value within range of [0,1] and isnt binary class. We
 
 
 ```{r}
-logistict_prediction <- as.factor(if_else(logistict_prediction > 0.5, "sufficient", "insufficient"))
+logistict_prediction <- as.factor(if_else(logistict_prediction >= 0.5, "sufficient", "insufficient"))
 
 head(logistict_prediction)
 ```
@@ -651,7 +608,7 @@ head(logistict_prediction)
 As result we have categorical or class prediction, we use confusion matrix to evaluate the model
 
 ```{r}
-matrix <- confusionMatrix(logistict_prediction, train_validation$coverage, positive = "sufficient")
+matrix <- confusionMatrix(logistict_prediction, train_validation$coverage, positive = "insufficient")
 table <- as.table(matrix)
 table <- as.data.frame(table)
 confussionMatrixPlot(table)
@@ -662,7 +619,13 @@ logistict_matrix <- matrix_result(matrix, "Logistict Reg.")
 logistict_matrix
 ```
 
-The result show our prediction on validation dataset using logistic regression model is 78.38% for accuracy, it mean that our result data prediction 78,38% is correctly classified. Precision/positive predicted value around 79.78%, mean our positive prediction is correctly classified. Value of sensitivity is 70.83% and specificity 84.78%, this indicate positive and negative predict correctly classified range around 70-84%.
+These table explain:   
+* Accuracy: the ability to correctly predict both classes from the total observation.   
+* Precision: the ability to correctly predict the positive class from the total predicted-positive class (false positive is low).   
+* Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
+* Specificity: the ability to correctly predict the negative class from the total actual-negative class.  
+
+The result show our prediction on validation dataset using logistic regression model is 81.6% for accuracy, it mean that our result data prediction 81.6% is correctly classified. Precision/positive predicted value around 80.60%, mean our positive prediction is correctly classified. Value of sensitivity is 86.95% and specificity 75.32%, this indicate positive and negative predict correctly classified range around 75% - 86%.
 
 ## Naive Bayes
 
@@ -685,14 +648,14 @@ naive_model <- naiveBayes(coverage ~ ., data = train_training_upsample, laplace 
 
 ### Model Evaluation
 
-We have make our logistic regression using all predict variable on dataset. Next this model use to predict with valudation dataset.
+Next this model use to predict with valudation dataset, and using confussion matrix
 
 ```{r}
 naive_prediction <- predict(naive_model, train_validation)
 ```
 
 ```{r}
-matrix <- confusionMatrix(naive_prediction, train_validation$coverage)
+matrix <- confusionMatrix(naive_prediction, train_validation$coverage, positive = "insufficient")
 table <- as.table(matrix)
 table <- as.data.frame(table)
 confussionMatrixPlot(table)
@@ -703,22 +666,152 @@ naive_matrix <- matrix_result(matrix, "Naive Bayes")
 naive_matrix
 ```
 
-## Decision Tree
+These table explain:   
+  * Accuracy: the ability to correctly predict both classes from the total observation.   
+  * Precision: the ability to correctly predict the positive class from the total predicted-positive class (false positive is low).   
+  * Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
+  * Specificity: the ability to correctly predict the negative class from the total actual-negative class.   
+
+### Model Improvement
+
+There is way to improve our naive bayes, before we do it we will check ROC curve from our naive bayes:
 
 ```{r}
-dtree_model <- ctree(formula = coverage ~ src_area + day + hour, data = train_training_upsample)
+naive_prediction_raw <- as.data.frame(predict(naive_model, train_validation, type = "raw"))
+
+# ROC
+naive_roc <- data.frame(prediction = naive_prediction_raw[,2],
+                        trueclass = as.numeric(train_validation$coverage=="sufficient"))
+
+naive_roc_pred <- prediction(naive_roc$prediction, naive_roc$trueclass) 
+
+# ROC curve
+plot(performance(naive_roc_pred, "tpr", "fpr"),
+     main = "ROC")
+abline(a = 0, b = 1)
+```
+
+The ROC is a curve that shows the performance of the classification model for all thresholds. ROC represents graphics from:
+
+  * `Recall / sensitivity` (true positive rate) on they axis.   
+  * `1-specificity` (false positive rate) on thex axis.   
+
+Next we calculate AUC 
+
+```{r}
+# AUC
+auc <- performance(naive_roc_pred, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+
+AUC is the area under the ROC curve. AUC values indicate the success of the model predicting / differentiating the two classes. The area value has an interval between 0 to 1. If the AUC value is close to 1, it means that the classification model is able to predict / distinguish the two classes well. However, if the AUC value is close to 0.5 it means that the classification model is not able to predict / distinguish the two classes well.   
+  * `AUC value close to 1`: the classification model is able to predict / distinguish the two classes well   
+  * `AUC values close to 0.5`: the classification model is not able to predict / distinguish the two classes well.   
+  
+Based on result ROC and AUC, we get our ROC curce show good separation with AUC score 0.8436585 it mean we have chance to improve this Naive Bayes Model.
+
+In our case we are focus “insufficient” label in variable `coverage` and one of method to tuning model is change the threshold.
+
+```{r warning=FALSE}
+# model tuning - metrics function
+co <- seq(0.01,0.99,length=100)
+result <- matrix(0,100,4)
+
+# apply function metrics
+for(i in 1:100){
+  result[i,] = metrics(cutoff = co[i], 
+                     prob = naive_prediction_raw$sufficient, 
+                     ref = as.factor(ifelse(train_validation$coverage=="sufficient", 1, 0)), 
+                     postarget = "1", 
+                     negtarget = "0")
+}
+
+# visualize
+ggplotly(tibble("Recall" = result[,1],
+           "Accuracy" = result[,2],
+           "Precision" = result[,3],
+           "Specificity" = result[,4],
+                   "Cutoff" = co) %>% 
+  gather(key = "Metrics", value = "value", 1:4) %>% 
+  ggplot(aes(x = Cutoff, y = value, col = Metrics)) +
+  geom_line(lwd = 1.5) +
+  scale_color_manual(values = c("darkred","darkgreen","orange", "blue")) +
+  scale_y_continuous(breaks = seq(0,1,0.1), limits = c(0,1)) +
+  scale_x_continuous(breaks = seq(0,1,0.1)) +
+  labs(title = "Tradeoff Model Perfomance") +
+  theme_minimal() +
+  theme(legend.position = "top",
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank()))
+```
+
+From plot above, we get information break even point is around 0.45. we will set it around 0.49 because we are focusing on Precision parameter, meanwhile we still want other paramaeter get good result.
+
+```{r}
+#Tuning Threshold
+naive_prediction_tuning <- naive_prediction_raw %>%
+  mutate(label = as.factor(ifelse(sufficient >= 0.48, "sufficient", "insufficient"))) %>% 
+  select(label)
+
+
+naive_matrix_tuning <- confusionMatrix(naive_prediction_tuning$label, train_validation$coverage, positive = "insufficient")
+naive_matrix_tuning <- matrix_result(naive_matrix_tuning, "Naive Bayes Tuning")
+
+rbind(naive_matrix_tuning,naive_matrix)
+```
+
+
+## Decision Tree
+
+Decision tree model is one of the tree-based models which has the major benefit of being interpretable. Decision tree is an algorithm that will make a set of rules visualized in a diagram that resembles a tree. There are certain characteristics of decision tree model:
+
+  * Perform well on both numerical and categorical variable.   
+  * All predictors are assumed to interact.   
+  * Quite robust to the problem of multicollinearity. A decision tree will choose a variable that has the highest information gain in one split, whereas a method such as logistic regression would have used both.   
+  * Robust and insensitive to outliers. Splitting will happen at a condition where it maximizes the homogeneity within resulting groups. Outliers will have little influence on the splitting process.   
+
+### Model Train
+
+let build decision tree model
+
+```{r}
+dtree_model <- ctree(formula = coverage ~., data = train_training_upsample)
 ```
 
 ```{r}
 plot(dtree_model)
 ```
 
+A decision tree consists of several parts. The first box in the upper part of the plot is the root node. The root will split and make branches by certain rules. Each branches ended with a node. Some nodes split again into other nodes and called the internal node. Nodes that do not split anymore or appear at the end of the tree is called the terminal node or leaf node, just like a leaf on a tree.   
+
+Each node shows:   
+
+  * the predicted class (Excellent/Poor-Normal).
+  * the probability of Excellent/Poor-Normal class.
+  * the percentage of observations in the node.
+  * the root and internal nodes also show the rules (variables with threshold/value) that will partition each observation.
+  
+```{r}
+width(dtree_model)
+```
+
+```{r}
+depth(dtree_model)
+```
+
+We found our decision tree models create not complicated tree using our train dataset. it shows from Width 10 it mean total Leaf Nodes, and 6 depth it mean Internal Nodes.
+
+### Model Evaluation
+
+We need Next this model use to predict with valudation dataset, and using confussion matrix
+
 ```{r}
 dtree_prediction <- predict(dtree_model, train_validation)
 ```
 
 ```{r}
-matrix <- confusionMatrix(dtree_prediction, train_validation$coverage)
+matrix <- confusionMatrix(dtree_prediction, train_validation$coverage, positive = "insufficient")
 table <- as.table(matrix)
 table <- as.data.frame(table)
 confussionMatrixPlot(table)
@@ -729,69 +822,126 @@ dtree_matrix <- matrix_result(matrix, "Decision Tree")
 dtree_matrix
 ```
 
+These table explain:   
+  * Accuracy: the ability to correctly predict both classes from the total observation.   
+  * Precision: the ability to correctly predict the positive class from the total predicted-positive class (false positive is low).   
+  * Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
+  * Specificity: the ability to correctly predict the negative class from the total actual-negative class. 
+
+### Model Improvement
+
+In Our Decision model result Accuracy, Sensitivity, Specificity is quite ok. However we would try tuning it and hope can get better result.
+
 ```{r}
-predict_result <- predict(dtree_model, test)
+dtree_prediction_raw <- predict(dtree_model, train_validation, type = "prob")
+
+dtree_roc <- prediction(dtree_prediction_raw[,2], train_validation$coverage)  
+plot(performance(dtree_roc, "tpr", "fpr"),
+     main = "ROC")
+abline(a = 0, b = 1)
 ```
 
-## Random Forest 
+```{r}
+auc <- performance(dtree_roc, "auc")
+auc@y.values[[1]]
+```
+  
+Based on result ROC and AUC, we get our ROC curce show good separation with AUC score 0.8448047 it mean we still have chance to improve this Decision tree Model.
+
+In our case we are focus “insufficient” on `coverage` variable as positive class, so we will try to improve the Precision, and one of method to tuning model is change pruning and tree-size.
 
 ```{r}
-ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 5)
+ctrl <- ctree_control(mincriterion = 0.35, minsplit = 100, minbucket = 50)
 ```
 
 ```{r}
-randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 100)
+dtree_tuning_model <- ctree(formula = coverage ~., data = train_training_upsample, control = ctrl)
 ```
 
 ```{r}
-randomforest_prediction <- predict(randomforest_model, train_validation)
+dtree_prediction_tuning <- predict(dtree_tuning_model, train_validation)
 ```
 
 ```{r}
-matrix <- confusionMatrix(randomforest_prediction, train_validation$coverage)
+matrix <- confusionMatrix(dtree_prediction_tuning, train_validation$coverage, positive = "insufficient")
 table <- as.table(matrix)
 table <- as.data.frame(table)
 confussionMatrixPlot(table)
 ```
 
 ```{r}
-randomforest_matrix <- matrix_result(matrix, "Random Forest")
-randomforest_matrix
+dtree_tuning_matrix <- matrix_result(matrix, "Decision Tree Tuning")
+rbind(dtree_tuning_matrix,dtree_matrix)
 ```
 
-```{r}
-tbl = matrix(data=c(51, 49, 24, 26), nrow=2, ncol=2, byrow=T)
-dimnames(tbl) = list(City=c('B', 'T'), Gender=c('M', 'F'))
-
-chi2 = chisq.test(tbl, correct=F)
-c(chi2$statistic, chi2$p.value)
-
-sqrt(chi2$statistic / sum(tbl))
-```
+Result after we tuning the decision tree model, we can increase 1% precision and specificity compare with previous deicision tree model.
 
 
 
 
-```{r}
-test$coverage <- predict_result
-test <- test %>% 
-  mutate(coverage = as.factor(if_else(coverage == 1,"sufficient","insufficient"))) %>% 
-  select(-c(date,day,hour))
-```
 
-```{r}
-write.csv(test, "data/data-test-result.csv")
-```
 
-```{r}
-mean_distance <- train_hourly %>% 
-  group_by(src_area, date, day, hour) %>% 
-  summarise(mean_distance = mean(distance)) %>% 
-  ungroup() %>% 
-  select(mean_distance)
+<!-- ```{r} -->
+<!-- predict_result <- predict(naive_model, test) -->
+<!-- ``` -->
 
-coverage_hourly <- cbind(coverage_hourly, mean_distance)
+<!-- ```{r} -->
+<!-- write <- test -->
+<!-- write$coverage <- predict_result -->
+<!-- write <- write %>%  -->
+<!--   select(-c(date,day,hour)) -->
+<!-- write -->
+<!-- ``` -->
 
-coverage_hourly
-```
+<!-- ```{r} -->
+<!-- write.csv(write, "data/data-test-result-naive.csv") -->
+<!-- ``` -->
+
+
+<!-- ## Random Forest  -->
+
+<!-- ```{r} -->
+<!-- ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 5) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 100) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- randomforest_prediction <- predict(randomforest_model, train_validation) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- matrix <- confusionMatrix(randomforest_prediction, train_validation$coverage) -->
+<!-- table <- as.table(matrix) -->
+<!-- table <- as.data.frame(table) -->
+<!-- confussionMatrixPlot(table) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- randomforest_matrix <- matrix_result(matrix, "Random Forest") -->
+<!-- randomforest_matrix -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tbl = matrix(data=c(51, 49, 24, 26), nrow=2, ncol=2, byrow=T) -->
+<!-- dimnames(tbl) = list(City=c('B', 'T'), Gender=c('M', 'F')) -->
+
+<!-- chi2 = chisq.test(tbl, correct=F) -->
+<!-- c(chi2$statistic, chi2$p.value) -->
+
+<!-- sqrt(chi2$statistic / sum(tbl)) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- test_hourly <- test %>% -->
+<!--   mutate(src_area = as.factor(src_area), -->
+<!--         date = date(datetime), -->
+<!--         day = as.factor(wday(datetime, label = TRUE, abbr = FALSE)), -->
+<!--         hour = as.factor(hour(datetime))) -->
+
+<!-- test_hourly -->
+<!-- ``` -->
 
