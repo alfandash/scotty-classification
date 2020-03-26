@@ -1,8 +1,14 @@
 ---
-title: "Untitled"
+title: "Scotty Classification Prediction Model"
+subtitle: "Logistic Regression, Naive Bayes, Decision Tree"
 author: "Alfan"
 date: "3/23/2020"
-output: html_document
+output: 
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: true
 ---
 
 ```{r setup, include=FALSE}
@@ -31,11 +37,17 @@ To solve this case we need import some package to help process and predict:
 
 ```{r message=FALSE}
 library(GGally)
+# Wrangling package
 library(tidyverse)
+# Date processing Package
 library(lubridate)
+# Scale numeric
 library(scales)
+# Sampling Helpoer
 library(rsample)
+# Confussion matrix
 library(caret)
+# Decision tree package
 library(partykit)
 # Smote for unbalanced data
 library(DMwR)
@@ -49,25 +61,19 @@ library(e1071)
 library(plotly)
 ```
 
+We will import some script to help us finish this analysis.
+
 ```{r}
 source("script/matrix_result.R")
 source("script/metrics.R")
-
-confussionMatrixPlot <- function(table) {
-  table %>% ggplot(aes(x = Prediction, y = Reference, fill = Freq)) +
-  geom_tile() +
-  geom_text(aes(label = Freq), fontface = "bold", color = "white") +
-  theme_minimal() +
-  theme(legend.position = "none")
-}
- 
+source("script/confussion_matrix_plot.R")
 ```
 
 # Read Data
 
 Scotty provide transaction detail transaction from October 1st, 2017 to December 2nd, 2017 as train dataset. Based on this train data we can start process to make model and predict. 
 
-```{r}
+```{r message=FALSE}
 train <- read_csv("data/data-train.csv")
 test <- read_csv("data/data-test.csv")
 ```
@@ -97,8 +103,9 @@ The dataset includes information about:
   * status: Trip status (all status considered as a demand)    
   * confirmed_time_sec: Time different from request to confirmed (in seconds)   
   
+# Data Wrangling
 
-Based on data above, we cant see coverage variable inside train data. but we found train data structure contain detail order from scotty. Some variable have mismatch datatype, we will try to change data type:
+Based on information, we cant see coverage variable inside train data. but we found train data structure contain detail order from scotty. Some variable have mismatch datatype, we will try to change data type:
 
 ```{r}
 train <- train %>%
@@ -109,8 +116,6 @@ train <- train %>%
         status = as.factor(status)
         )
 ```
-
-# Data Wrangling
 
 lets preview contain of data to understand more train data:
 
@@ -397,25 +402,16 @@ coverage_all_date %>%
 
 ```
 
-some insight we can get is:   
-  1. sxk9 area is the most insufficient driver area, from heatmap all days its show dark area it mean all days and every hour users didnt get driver when they order.
-  2. sxk8 area is the most sufficient driver area, every hour and every hour confirmed driver than other area. 
-  3. However area sxk8 still in 08:00 it nearly insufficient label more than sufficient label, especially in working days from monday to friday, it show more dark blue on heatmap.
-  4.sxk3 area get more driver start from morning 06:00 which people start to activity until late night around 00:00 and this case happen always every day looks from heatmap.
-  5. There is corellation between days, hour, area to coverage.
+some insight we can get is:    
+  1. sxk9 area is the most insufficient driver area, from heatmap all days its show dark area it mean all days and every hour users didnt get driver when they order.    
+  2. sxk8 area is the most sufficient driver area, every hour and every hour confirmed driver than other area.    
+  3. However area sxk8 still in 08:00 it nearly insufficient label more than sufficient label, especially in working days from monday to friday, it show more dark blue on heatmap.    
+  4.sxk3 area get more driver start from morning 06:00 which people start to activity until late night around 00:00 and this case happen always every day looks from heatmap.     
+  5. There is corellation between days, hour, area to coverage.    
 
 
 ```{r}
 glimpse(train)
-```
-
-
-```{r}
-ggcorr(train, label = T)
-```
-
-```{r}
-summary(coverage_all_date)
 ```
 
 # Data Preprocessing 
@@ -876,26 +872,53 @@ rbind(dtree_tuning_matrix,dtree_matrix)
 
 Result after we tuning the decision tree model, we can increase 1% precision and specificity compare with previous deicision tree model.
 
+# Result
 
+In this case we use Confussion Matrix as model evaluation, and based on our problem we need classification model report that would be evaluated on next 7 days (Sunday, December 3rd 2017 to Saturday, December 9th 2017). And prediction should focus on model to predict which region and times are risky enough to have this “no drivers” problem.    
 
+Model that we made before we put "insufficient" as positif value, so target we need highest Precision percentage predeiction. Lets we sum up all result matrix from all model and tuning model we made before:
 
+```{r}
+result <- rbind(logistict_matrix, naive_matrix_tuning, naive_matrix, dtree_tuning_matrix, dtree_matrix)
+result %>% arrange(desc(Precision))
+```
 
+To prove which model is more better we will use test dataset to simulize real word, and see the result of conffusion matrix comparison fron both non-tuning and tuning decision tree model. We will save both result preduction as csv:
 
-<!-- ```{r} -->
-<!-- predict_result <- predict(naive_model, test) -->
-<!-- ``` -->
+```{r}
+dtree_result <- predict(dtree_model, test)
+dtree_tuning_result <- predict(dtree_tuning_model, test)
 
-<!-- ```{r} -->
-<!-- write <- test -->
-<!-- write$coverage <- predict_result -->
-<!-- write <- write %>%  -->
-<!--   select(-c(date,day,hour)) -->
-<!-- write -->
-<!-- ``` -->
+write_dtree <- test
+write_dtree$coverage <- dtree_result
+write_dtree <- write_dtree %>%
+  select(-c(date,day,hour))
 
-<!-- ```{r} -->
-<!-- write.csv(write, "data/data-test-result-naive.csv") -->
-<!-- ``` -->
+write_tuning_dtree <- test
+write_tuning_dtree$coverage <- dtree_tuning_result
+write_tuning_dtree <- write_tuning_dtree %>%
+  select(-c(date,day,hour))
+
+write.csv(write_dtree, "data/data-test-dtree.csv")
+write.csv(write_tuning_dtree, "data/data-test-dtree_tuning.csv")
+
+```
+
+Here is the result of Decision Tree model result:
+```{r fig.align="center", echo=FALSE}
+knitr::include_graphics("./images/dtree_test_result.png")
+```
+
+Here is the result of Decision Tree Tuning model result:
+```{r fig.align="center", echo=FALSE}
+knitr::include_graphics("./images/dtree_tuning_test_result.png")
+```
+
+We can see the different there is trade off between 2 models, if we want to increase precision it will take another result effect decrease. since we are focusing to guess the precision value we can choose Decision Tree Tuning model as our best for this case condition.   
+
+We can see Decision Tree Tuning is the most highest percentage on precision value, we can use this model to predict which area and hour that have more risk get "nodriver" status. After we found it, scotty can make strategy or provide more driver in area and hour that have more "insufficient" label.   
+
+It should have effect for bussiness to, since we can provide user order more better, it will effect can increase revenue both driver and scotty company.   
 
 
 <!-- ## Random Forest  -->
