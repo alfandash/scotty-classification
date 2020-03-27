@@ -59,6 +59,8 @@ library(ROCR)
 library(e1071)
 # Visualize
 library(plotly)
+# Inteprate Random Forest Model
+library(lime)
 ```
 
 We will import some script to help us finish this analysis.
@@ -621,7 +623,7 @@ These table explain:
 * Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
 * Specificity: the ability to correctly predict the negative class from the total actual-negative class.  
 
-The result show our prediction on validation dataset using logistic regression model is 81.6% for accuracy, it mean that our result data prediction 81.6% is correctly classified. Precision/positive predicted value around 80.60%, mean our positive prediction is correctly classified. Value of sensitivity is 86.95% and specificity 75.32%, this indicate positive and negative predict correctly classified range around 75% - 86%.
+The result show our prediction on validation dataset using logistic regression model is 79.91% for accuracy, it mean that our result data prediction 79.91% is correctly classified. Precision/positive predicted value around 80.31%, mean our positive prediction is correctly classified. Value of sensitivity is 80.31% and specificity 75.96%, this indicate positive and negative predict correctly classified range around 75% - 80%.
 
 ## Naive Bayes
 
@@ -872,6 +874,118 @@ rbind(dtree_tuning_matrix,dtree_matrix)
 
 Result after we tuning the decision tree model, we can increase 1% precision and specificity compare with previous deicision tree model.
 
+## Random Forest
+
+Random forests are based on a simple idea: ‘the wisdom of the crowd’. Aggregate of the results of multiple predictors gives a better prediction than the best individual predictor. A group of predictors is called an ensemble. Thus, this technique is called Ensemble Learning.
+
+To improve our model, we can train a group of Decision Tree classifiers, each on a different random subset of the train set. To make a prediction, we just obtain the predictions of all individuals trees, then predict the class that gets the most votes. This technique is called Random Forest.
+
+One wekness of Random Forest Model is are easy to get over feet with train data, to decrease possibility get overfitted model we can use K-Fold Cross Validation. K- Fold Cross-validation is a resampling procedure used to evaluate machine learning models on a limited data sample.
+
+The procedure has a single parameter called k that refers to the number of groups that a given data sample is to be split into. As such, the procedure is often called k-fold cross-validation. When a specific value for k is chosen, it may be used in place of k in the reference to the model, such as k=10 becoming 10-fold cross-validation.
+
+Cross-validation is primarily used in applied machine learning to estimate the skill of a machine learning model on unseen data. That is, to use a limited sample in order to estimate how the model is expected to perform in general when used to make predictions on data not used during the training of the model.
+
+It is a popular method because it is simple to understand and because it generally results in a less biased or less optimistic estimate of the model skill than other methods, such as a simple train/test split.
+
+### Model Train
+
+Lets implement it in our random forest model, we have consideration our case predictor variable is verty limited, so to make train and hope more better result, i will set more k-fold cross validation
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", number = 5,repeats = 10)
+```
+
+train random forest model 
+
+```{r}
+# our result model will save on RDS
+randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 10)
+# 
+# saveRDS(randomforest_model, file = "data/model_rforest.RDS")
+```
+
+Lets see result and get insight from our Random Forest Model
+
+```{r}
+# randomforest_model <- readRDS("data/model_rforest.RDS")
+
+randomforest_model
+```
+
+From model summary we have build, we get optimum number of variable considered for splitting at each tree node is 2. Next we will use `varImp()` to get information which feature/variable importance for our random forest model.
+
+```{r}
+varImp(randomforest_model)
+```
+
+We found `src_area` is most important predictor variable from our train dataset, we can see top 2 of table is class we have in. `src_area`. In practice, the random forest already have out-of-bag estimates (OOB) that can be used as a reliable estimate of its true accuracy on unseen examples. we can check OOB rate in our random forest model
+
+```{r}
+randomforest_model$finalModel
+```
+
+```{r}
+plot(randomforest_model$finalModel)
+legend("topright", colnames(randomforest_model$finalModel$err.rate),col=1:6,cex=0.8,fill=1:6)
+```
+
+Surprisingly, our random forest model actually only need 1 trees as best method to predict based on our train dataset.   
+
+Random forest its black box method, that mean very hard to intepret what exactly happen inside the model, i would like try useing LIME packages that can help us to inteprate our random forest model. We would to see how our random forest model classify an observations to sufficient with 3 features we have.   
+
+To use lime we need dataset that already convert to data frame, and in this case we already have it. We can use `train_training` dataset as observation. As we know we only have few predictor variable is 3, so we will use all variable.
+
+```{r}
+set.seed(100)
+explainer <- lime((train_training[,-4]),
+                  model = randomforest_model)
+
+```
+
+
+```{r}
+explanation <- explain(train_training[1:4,-4],
+                       explainer,
+                       n_permutations = 5000,
+                       dist_fun = "manhattan",
+                       n_labels = 1,
+                       n_features = 3)
+
+plot_features(explanation)
+```
+
+Before we start to explain the plot, before we already explain using `VarImp` is variable importance. The different between Variable importance and LIME is, we can see how feature contribute to classification the observation. Because its an visualisation we can see it clearly how predictor works.    
+
+Intepret case 1, label is to be inssufficient because it because its sunday and the orders come at middle of the night. Intresting we found is, start from hour 3 am even it in the sunday the label change to sufficient. We can conclude that area maybe didnt contribute more in this model, the time and day maybe effect more than area.
+
+### Model Evaluation
+
+We need Next this model use to predict with valudation dataset, and using confussion matrix
+
+```{r}
+randomforest_prediction <- predict(randomforest_model, train_validation)
+```
+
+```{r}
+matrix <- confusionMatrix(randomforest_prediction, train_validation$coverage)
+table <- as.table(matrix)
+table <- as.data.frame(table)
+confussionMatrixPlot(table)
+```
+
+```{r}
+randomforest_matrix <- matrix_result(matrix, "Random Forest")
+randomforest_matrix
+```
+
+hese table explain:   
+  * Accuracy: the ability to correctly predict both classes from the total observation.   
+  * Precision: the ability to correctly predict the positive class from the total predicted-positive class (false positive is low).   
+  * Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
+  * Specificity: the ability to correctly predict the negative class from the total actual-negative class. 
+
+
 # Result
 
 In this case we use Confussion Matrix as model evaluation, and based on our problem we need classification model report that would be evaluated on next 7 days (Sunday, December 3rd 2017 to Saturday, December 9th 2017). And prediction should focus on model to predict which region and times are risky enough to have this “no drivers” problem.    
@@ -879,7 +993,7 @@ In this case we use Confussion Matrix as model evaluation, and based on our prob
 Model that we made before we put "insufficient" as positif value, so target we need highest Precision percentage predeiction. Lets we sum up all result matrix from all model and tuning model we made before:
 
 ```{r}
-result <- rbind(logistict_matrix, naive_matrix_tuning, naive_matrix, dtree_tuning_matrix, dtree_matrix)
+result <- rbind(logistict_matrix, naive_matrix_tuning, naive_matrix, dtree_tuning_matrix, dtree_matrix,randomforest_matrix)
 result %>% arrange(desc(Precision))
 ```
 
@@ -925,14 +1039,6 @@ It should have effect for bussiness to, since we can provide user order more bet
 
 <!-- ```{r} -->
 <!-- ctrl <- trainControl(method = "repeatedcv", number = 5, repeats = 5) -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 100) -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- randomforest_prediction <- predict(randomforest_model, train_validation) -->
 <!-- ``` -->
 
 <!-- ```{r} -->
