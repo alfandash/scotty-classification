@@ -927,7 +927,7 @@ train random forest model
 
 ```{r}
 # our result model will save on RDS
-randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 10)
+# randomforest_model <- train(coverage ~ ., data = train_training_upsample, method = "rf", trControl = ctrl, ntree = 10)
 # 
 # saveRDS(randomforest_model, file = "data/model_rforest.RDS")
 ```
@@ -935,7 +935,7 @@ randomforest_model <- train(coverage ~ ., data = train_training_upsample, method
 Lets see result and get insight from our Random Forest Model
 
 ```{r}
-# randomforest_model <- readRDS("data/model_rforest.RDS")
+randomforest_model <- readRDS("data/model_rforest.RDS")
 
 randomforest_model
 ```
@@ -957,7 +957,7 @@ plot(randomforest_model$finalModel)
 legend("topright", colnames(randomforest_model$finalModel$err.rate),col=1:6,cex=0.8,fill=1:6)
 ```
 
-Surprisingly, our random forest model actually only need 1 trees as best method to predict based on our train dataset.   
+Surprisingly, our random forest model actually only under 10 trees as best method to predict based on our train dataset.   
 
 Random forest its black box method, that mean very hard to intepret what exactly happen inside the model, i would like try using LIME packages that can help us to inteprate our random forest model. We would to see how our random forest model classify an observations to sufficient with 3 features we have.   
 
