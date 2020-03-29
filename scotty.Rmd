@@ -39,6 +39,7 @@ To solve this case we need import some package to help process and predict:
 library(GGally)
 # Wrangling package
 library(tidyverse)
+library(tidymodels)
 # Date processing Package
 library(lubridate)
 # Scale numeric
@@ -517,11 +518,11 @@ Based on data test exploration we do above, the only predictor variable we can u
 
 ```{r}
 train_training <- train_training %>% 
-  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+  select(c("src_area", "day", "hour", "coverage"))
 train_validation <- train_validation %>% 
-  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+    select(c("src_area", "day", "hour", "coverage"))
 train_training_upsample <- train_training_upsample %>% 
-  select(-c("confirmed","nodrivers","total_transaction","datetime","date"))
+    select(c("src_area", "day", "hour", "coverage"))
 ```
 
 
@@ -798,7 +799,32 @@ width(dtree_model)
 depth(dtree_model)
 ```
 
-We found our decision tree models create not complicated tree using our train dataset. it shows from Width 10 it mean total Leaf Nodes, and 6 depth it mean Internal Nodes.
+We found our decision tree models create not complicated tree using our train dataset. it shows from Width 10 it mean total Leaf Nodes, and 6 depth it mean Internal Nodes.   
+
+we would like to explain more how our model choose class for our train model, i will using lime package to intepret it.
+
+```{r}
+set.seed(100)
+model<-as_classifier(dtree_model, labels = NULL)
+explainer <- lime((train_training[,-4]),
+                  model = model)
+
+```
+
+
+```{r}
+explanation <- explain(train_training[1:4,-4],
+                       explainer,
+                       dist_fun = "manhattan",
+                       n_labels = 1,
+                       n_features = 3)
+
+plot_features(explanation)
+```
+
+In case number 1, 4, 6, 7 we can see the observer data have same src_area = sxk3 and have same day = Sunday, but the different is hour is being siginificant factor our model classify the data. We can see other insight however its late night people using scotty.
+
+Case 1 show src_area most important factor for coverage label, if hour and day dont have any significant.
 
 ### Model Evaluation
 
@@ -825,6 +851,7 @@ These table explain:
   * Precision: the ability to correctly predict the positive class from the total predicted-positive class (false positive is low).   
   * Recall: the ability to correctly predict the positive class from the total actual-positive class (false negative is low).   
   * Specificity: the ability to correctly predict the negative class from the total actual-negative class. 
+  
 
 ### Model Improvement
 
@@ -932,7 +959,7 @@ legend("topright", colnames(randomforest_model$finalModel$err.rate),col=1:6,cex=
 
 Surprisingly, our random forest model actually only need 1 trees as best method to predict based on our train dataset.   
 
-Random forest its black box method, that mean very hard to intepret what exactly happen inside the model, i would like try useing LIME packages that can help us to inteprate our random forest model. We would to see how our random forest model classify an observations to sufficient with 3 features we have.   
+Random forest its black box method, that mean very hard to intepret what exactly happen inside the model, i would like try using LIME packages that can help us to inteprate our random forest model. We would to see how our random forest model classify an observations to sufficient with 3 features we have.   
 
 To use lime we need dataset that already convert to data frame, and in this case we already have it. We can use `train_training` dataset as observation. As we know we only have few predictor variable is 3, so we will use all variable.
 
@@ -986,7 +1013,7 @@ hese table explain:
   * Specificity: the ability to correctly predict the negative class from the total actual-negative class. 
 
 
-# Result
+# Conclusion
 
 In this case we use Confussion Matrix as model evaluation, and based on our problem we need classification model report that would be evaluated on next 7 days (Sunday, December 3rd 2017 to Saturday, December 9th 2017). And prediction should focus on model to predict which region and times are risky enough to have this “no drivers” problem.    
 
